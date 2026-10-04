@@ -1,30 +1,340 @@
-# A simple action usage
-name: Build Kernel
+name: Build POCO X3 NFC Surya Kernel
+
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
-  Build-Kernel:
-    strategy:
-      fail-fast: false
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
+  build:
+    runs-on: ubuntu-22.04
 
     steps:
-      - name: Build Kernel
-        uses: dabao1955/kernel_build_action@main
+      - name: Checkout StormBreaker Surya Kernel
+        uses: actions/checkout@v4
         with:
-          kernel-url: https://github.com/AcmeUI-Devices/android_kernel_xiaomi_cas
-          kernel-dir: msm-4.19
-          kernel-branch: taffy
-          config: cas_defconfig
-          arch: arm64
-          aosp-gcc: true
-          aosp-clang: true
-          ksu: true
-          ksu-version: main
-          android-version: 12
-          aosp-clang-version: r383902
-          disable-lto: true
-          anykernel3: true
+          repository: stormbreaker-project/kernel_xiaomi_surya
+          ref: staging/main
+          fetch-depth: 1
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc \
+            bison \
+            build-essential \
+            ccache \
+            clang \
+            flex \
+            g++-multilib \
+            gcc-multilib \
+            git \
+            libelf-dev \
+            libssl-dev \
+            lz4 \
+            make \
+            python3 \
+            rsync \
+            unzip \
+            wget \
+            zip
+
+      - name: Show kernel tree information
+        run: |
+          echo "===== KERNEL TREE ====="
+          git log -1 --oneline
+          echo
+          echo "===== ARCH ARM64 CONFIGS ====="
+          find arch/arm64/configs -maxdepth 1 -type f | sort | head -100
+          echo
+          echo "===== POSSIBLE SURYA CONFIGS ====="
+          find arch/arm64/configs -maxdepth 1 -type f \
+            \( -iname '*surya*' -o -iname '*sm7150*' -o -iname '*qcom*' \) \
+            -print | sort || true
+
+      - name: Detect Surya defconfig
+        id: defconfig
+        shell: bash
+        run: |
+          set -e
+
+          CONFIG=""
+
+          for candidate in \
+            arch/arm64/configs/surya_defconfig \
+            arch/arm64/configs/vendor/surya_defconfig \
+            arch/arm64/configs/vendor/xiaomi/surya_defconfig \
+            arch/arm64/configs/sm7150_defconfig
+          do
+            if [ -f "$candidate" ]; then
+              CONFIG="$(basename "$candidate")"
+              break
+            fi
+          done
+
+          if [ -z "$CONFIG" ]; then
+            CONFIG="$(find arch/arm64/configs -maxdepth 2 -type f \
+              \( -iname '*surya*defconfig' -o -iname '*sm7150*defconfig' \) \
+              -printf '%f\n' | head -n 1)"
+          fi
+
+          if [ -z "$CONFIG" ]; then
+            echo "ERROR: Could not automatically find a Surya defconfig."
+            echo
+            echo "Available defconfigs:"
+            find arch/arm64/configs -maxdepth 2 -type f \
+              -iname '*defconfig' | sort
+            exit 1
+          fi
+
+          echo "Using defconfig: $CONFIG"
+          echo "DEFCONFIG=$CONFIG" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare kernel configuration
+        shell: bash
+        run: |
+          set -e
+
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export LLVM=1
+          export LLVM_IAS=1
+
+          mkdir -p out
+
+          make O=out ARCH=arm64 \
+            LLVM=1 LLVM_IAS=1 \
+            "${{ steps.defconfig.outputs.DEFCONFIG }}"
+
+          echo
+          echo "===== BASE CONFIG CREATED ====="
+          test -f out/.config
+          echo "Configuration OK."
+
+      - name: Apply performance configuration
+        shell: bash
+        run: |
+          set -e
+
+          CONFIG="out/.config"
+
+          enable_if_available() {
+            SYMBOL="$1"
+
+            if grep -q "^${SYMBOL}=" "$CONFIG"; then
+              sed -i "s/^${SYMBOL}=.*/${SYMBOL}=y/" "$CONFIG"
+              echo "Enabled: ${SYMBOL}=y"
+
+            elif grep -q "^# ${SYMBOL} is not set" "$CONFIG"; then
+              sed -i "s/^# ${SYMBOL} is not set/${SYMBOL}=y/" "$CONFIG"
+              echo "Enabled: ${SYMBOL}=y"
+
+            else
+              echo "Not available: ${SYMBOL}"
+            fi
+          }
+
+          echo "===== PERFORMANCE OPTIONS ====="
+
+          enable_if_available CONFIG_CPU_FREQ
+          enable_if_available CONFIG_CPU_FREQ_GOV_PERFORMANCE
+          enable_if_available CONFIG_CPU_FREQ_GOV_SCHEDUTIL
+          enable_if_available CONFIG_CPU_FREQ_GOV_ONDEMAND
+
+          enable_if_available CONFIG_DEVFREQ_GOV_PERFORMANCE
+          enable_if_available CONFIG_DEVFREQ_GOV_SIMPLE_ONDEMAND
+
+          enable_if_available CONFIG_PREEMPT
+          enable_if_available CONFIG_HIGH_RES_TIMERS
+
+          echo
+          echo "===== FINAL CONFIG CHECK ====="
+
+          grep -E \
+            'CONFIG_CPU_FREQ|CONFIG_CPU_FREQ_GOV|CONFIG_DEVFREQ_GOV|CONFIG_PREEMPT|CONFIG_HIGH_RES_TIMERS' \
+            "$CONFIG" || true
+
+      - name: Inspect CPU GPU clock and OPP sources
+        shell: bash
+        run: |
+          echo "===== CPU CLOCK / OPP SOURCES ====="
+
+          find . \
+            \( -path './.git' -o -path './out' \) -prune -o \
+            -type f \
+            \( -name '*.c' -o -name '*.h' -o -name '*.dts' -o -name '*.dtsi' \) \
+            -print0 |
+          xargs -0 grep -IlE \
+            'opp-hz|opp-microvolt|opp-supported-hw|freq_table|cpu_freq|cpufreq' \
+            2>/dev/null |
+          head -100 || true
+
+          echo
+          echo "===== GPU / KGSL SOURCES ====="
+
+          find . \
+            \( -path './.git' -o -path './out' \) -prune -o \
+            -type f \
+            \( -name '*.c' -o -name '*.h' -o -name '*.dts' -o -name '*.dtsi' \) \
+            -print0 |
+          xargs -0 grep -IlE \
+            'kgsl|adreno|gpu.*freq|gpu.*clock|devfreq' \
+            2>/dev/null |
+          head -100 || true
+
+          echo
+          echo "===== FREQUENCY VALUES FOUND ====="
+
+          grep -RhoE \
+            '([0-9]{6,10})[[:space:]]*(,[[:space:]]*[0-9]{6,10})*' \
+            drivers/clk \
+            drivers/cpufreq \
+            drivers/devfreq \
+            drivers/gpu \
+            arch/arm64/boot/dts \
+            2>/dev/null |
+          sort -u |
+          head -200 || true
+
+      - name: Regenerate configuration
+        shell: bash
+        run: |
+          set -e
+
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export LLVM=1
+          export LLVM_IAS=1
+
+          make O=out ARCH=arm64 \
+            LLVM=1 LLVM_IAS=1 \
+            olddefconfig
+
+          echo "Final kernel configuration generated."
+
+      - name: Build kernel
+        shell: bash
+        run: |
+          set -e
+
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export LLVM=1
+          export LLVM_IAS=1
+
+          echo "===== BUILD START ====="
+
+          make -j"$(nproc)" \
+            O=out \
+            ARCH=arm64 \
+            LLVM=1 \
+            LLVM_IAS=1
+
+      - name: Locate kernel image
+        shell: bash
+        run: |
+          set -e
+
+          echo "===== KERNEL OUTPUTS ====="
+
+          find out/arch/arm64/boot \
+            -maxdepth 2 \
+            -type f \
+            -printf '%p\n' \
+            | sort
+
+          IMAGE=""
+
+          for candidate in \
+            out/arch/arm64/boot/Image.gz-dtb \
+            out/arch/arm64/boot/Image.gz \
+            out/arch/arm64/boot/Image
+          do
+            if [ -f "$candidate" ]; then
+              IMAGE="$candidate"
+              break
+            fi
+          done
+
+          if [ -z "$IMAGE" ]; then
+            echo "ERROR: Kernel image was not produced."
+            exit 1
+          fi
+
+          echo "Kernel image: $IMAGE"
+          echo "KERNEL_IMAGE=$IMAGE" >> "$GITHUB_ENV"
+
+      - name: Create flashable kernel package
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p package
+
+          cp "$KERNEL_IMAGE" package/
+
+          if [ -f out/.config ]; then
+            cp out/.config package/kernel.config
+          fi
+
+          if [ -f out/System.map ]; then
+            cp out/System.map package/
+          fi
+
+          if [ -f out/vmlinux ]; then
+            cp out/vmlinux package/
+          fi
+
+          if [ -f out/arch/arm64/boot/dts/*.dtb ]; then
+            cp out/arch/arm64/boot/dts/*.dtb package/ 2>/dev/null || true
+          fi
+
+          if [ -f out/arch/arm64/boot/dts/qcom/*.dtb ]; then
+            cp out/arch/arm64/boot/dts/qcom/*.dtb package/ 2>/dev/null || true
+          fi
+
+          sha256sum package/* > package/SHA256SUMS
+
+          cat > package/BUILD_INFO.txt <<EOF
+          Device: POCO X3 NFC (Surya)
+          Source: stormbreaker-project/kernel_xiaomi_surya
+          Branch: staging/main
+
+          Build type:
+          Maximum source-supported performance configuration
+
+          CPU:
+          Performance governor support enabled when available
+
+          GPU:
+          Performance devfreq governor enabled when available
+
+          OC:
+          No unsupported arbitrary frequency/voltage values were injected.
+          The workflow scans the source OPP/clock tables for source-specific
+          overclock possibilities.
+
+          Thermal protection:
+          Preserved.
+
+          Kernel image:
+          $(basename "$KERNEL_IMAGE")
+          EOF
+
+          cd package
+          zip -9 -r ../POCO_X3_NFC_Surya_Performance_Kernel.zip .
+          cd ..
+
+          echo "===== PACKAGE CREATED ====="
+          ls -lh POCO_X3_NFC_Surya_Performance_Kernel.zip
+
+      - name: Upload kernel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: POCO-X3-NFC-Surya-Performance-Kernel
+          path: |
+            POCO_X3_NFC_Surya_Performance_Kernel.zip
+            package/*
+          if-no-files-found: error
