@@ -1,20 +1,11 @@
-       - name: Find Defconfig
-         id: config
-        shell: bash
-        run: |
-          set -e
+ - name: Find Defconfig
+  shell: bash
+  run: |
+    echo "===== ALL DEFCONFIGS ====="
+    find arch/arm64/configs -type f -name '*defconfig' -print | sort
 
-          echo "===== ALL DEFCONFIGS ====="
-
-          find arch/arm64/configs -type f -name '*defconfig' -print | sort
-
-          echo
-          echo "===== SURYA / XIAOMI / QCOM CONFIGS ====="
-
-          find arch/arm64/configs -type f \
-            \( -iname '*surya*' -o -iname '*xiaomi*' -o -iname '*qcom*' -o -iname '*sm7150*' \) \
-            -print | sort
-
-          echo
-          echo "===== STOPPING HERE ====="
-          echo "Copy the output above."
+    echo
+    echo "===== SURYA / KARNA / XIAOMI / QCOM ====="
+    find arch/arm64/configs -type f \
+      \( -iname '*surya*' -o -iname '*karna*' -o -iname '*xiaomi*' -o -iname '*qcom*' \) \
+      -print | sort
