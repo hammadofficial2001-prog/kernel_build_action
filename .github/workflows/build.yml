@@ -1,123 +1,20 @@
-name: Build POCO X3 NFC Surya Kernel
-
-on:
-  workflow_dispatch:
-
-permissions:
-  contents: read
-
-jobs:
-  build:
-    runs-on: ubuntu-22.04
-
-    steps:
-      - name: Checkout Kernel
-        uses: actions/checkout@v4
-        with:
-          repository: stormbreaker-project/kernel_xiaomi_surya
-          ref: staging/main
-          fetch-depth: 1
-
-      - name: Install Dependencies
+       - name: Find Defconfig
+         id: config
+        shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install -y bc bison build-essential clang flex \
-            git libelf-dev libssl-dev lz4 make python3 rsync unzip zip
+          set -e
 
-      - name: Find Defconfig
-        id: config
-        run: |
-          CONFIG=$(find arch/arm64/configs -type f \
-            \( -iname '*surya*defconfig' -o -iname '*sm7150*defconfig' \) \
-            | head -n 1)
+          echo "===== ALL DEFCONFIGS ====="
 
-          if [ -z "$CONFIG" ]; then
-            echo "No Surya defconfig found"
-            find arch/arm64/configs -type f -name '*defconfig' | head -50
-            exit 1
-          fi
-
-          echo "Found: $CONFIG"
-          echo "DEFCONFIG=$(basename "$CONFIG")" >> "$GITHUB_OUTPUT"
-
-      - name: Prepare Kernel
-        run: |
-          export ARCH=arm64
-
-          make O=out ARCH=arm64 \
-            ${{ steps.config.outputs.DEFCONFIG }}
-
-      - name: Performance Config
-        run: |
-          CONFIG=out/.config
-
-          for X in \
-            CONFIG_CPU_FREQ_GOV_PERFORMANCE \
-            CONFIG_CPU_FREQ_GOV_SCHEDUTIL \
-            CONFIG_DEVFREQ_GOV_PERFORMANCE \
-            CONFIG_PREEMPT \
-            CONFIG_HIGH_RES_TIMERS
-          do
-            if grep -q "^# $X is not set" "$CONFIG"; then
-              sed -i "s/^# $X is not set/$X=y/" "$CONFIG"
-            elif grep -q "^$X=" "$CONFIG"; then
-              sed -i "s/^$X=.*/$X=y/" "$CONFIG"
-            fi
-          done
-
-          make O=out ARCH=arm64 olddefconfig
-
-      - name: Inspect CPU GPU OPP
-        run: |
-          echo "===== CPU OPP / CLOCK ====="
-          grep -RInE \
-            'opp-hz|opp-microvolt|freq_table|cpufreq' \
-            arch/arm64/boot/dts drivers/cpufreq drivers/clk \
-            2>/dev/null | head -100 || true
+          find arch/arm64/configs -type f -name '*defconfig' -print | sort
 
           echo
-          echo "===== GPU / KGSL ====="
-          grep -RInE \
-            'kgsl|adreno|gpu.*freq|gpu.*clock|devfreq' \
-            arch/arm64/boot/dts drivers/gpu drivers/devfreq \
-            2>/dev/null | head -100 || true
+          echo "===== SURYA / XIAOMI / QCOM CONFIGS ====="
 
-      - name: Build Kernel
-        run: |
-          export ARCH=arm64
-          export LLVM=1
-          export LLVM_IAS=1
+          find arch/arm64/configs -type f \
+            \( -iname '*surya*' -o -iname '*xiaomi*' -o -iname '*qcom*' -o -iname '*sm7150*' \) \
+            -print | sort
 
-          make -j$(nproc) \
-            O=out \
-            ARCH=arm64 \
-            LLVM=1 \
-            LLVM_IAS=1
-
-      - name: Package
-        run: |
-          mkdir -p package
-
-          if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
-            cp out/arch/arm64/boot/Image.gz-dtb package/
-          elif [ -f out/arch/arm64/boot/Image.gz ]; then
-            cp out/arch/arm64/boot/Image.gz package/
-          elif [ -f out/arch/arm64/boot/Image ]; then
-            cp out/arch/arm64/boot/Image package/
-          else
-            echo "Kernel image not found"
-            exit 1
-          fi
-
-          cp out/.config package/kernel.config
-          sha256sum package/* > package/SHA256SUMS
-
-          cd package
-          zip -9 -r ../POCO_X3_NFC_Surya_Kernel.zip .
-          cd ..
-
-      - name: Upload Kernel
-        uses: actions/upload-artifact@v4
-        with:
-          name: POCO-X3-NFC-Surya-Kernel
-          path: POCO_X3_NFC_Surya_Kernel.zip
+          echo
+          echo "===== STOPPING HERE ====="
+          echo "Copy the output above."
