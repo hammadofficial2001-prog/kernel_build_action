@@ -11,35 +11,45 @@ jobs:
       contents: read
 
     steps:
-      - name: Checkout source
+      - name: Checkout kernel source
         uses: actions/checkout@v4
         with:
-          with:
-            ref: main
-           fetch-depth: 0
+          repository: andrey167/kernel_xiaomi_surya-msm
+          ref: main
+          fetch-depth: 0
 
-      - name: Install build dependencies
+      - name: Verify source
+        run: |
+          echo "Repository:"
+          git remote -v
+          echo "Current commit:"
+          git rev-parse HEAD
+          echo "Recent commits:"
+          git log --oneline -5
+
+      - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            bc bison flex build-essential \
-            libssl-dev libelf-dev \
-            python3 cpio rsync \
+            bc \
+            bison \
+            flex \
+            build-essential \
+            libssl-dev \
+            libelf-dev \
+            python3 \
+            cpio \
+            rsync \
             device-tree-compiler \
-            clang lld llvm
+            clang \
+            lld \
+            llvm
 
-      - name: Show source
-        run: |
-          echo "Commit:"
-          git rev-parse HEAD
-          echo "Kernel tree:"
-          ls -la
-          echo "Defconfigs:"
-          find arch/arm64/configs -type f | grep -Ei 'surya|sm6150|sm7150' || true
-
-      - name: Detect defconfig
+      - name: Find Surya defconfig
         run: |
           set -e
+
+          echo "Searching for Surya defconfig..."
 
           for cfg in \
             surya_defconfig \
@@ -49,29 +59,28 @@ jobs:
             sm7150_defconfig
           do
             if [ -f "arch/arm64/configs/$cfg" ]; then
+              echo "Found: $cfg"
               echo "DEFCONFIG=$cfg" >> "$GITHUB_ENV"
-              echo "Using $cfg"
               exit 0
             fi
           done
 
-          echo "No known Surya defconfig found."
+          echo "ERROR: No compatible Surya defconfig found."
           exit 1
 
-      - name: Prepare kernel config
+      - name: Prepare kernel configuration
         run: |
           set -e
 
           mkdir -p out
 
+          echo "Using defconfig: $DEFCONFIG"
+
           make O=out ARCH=arm64 "$DEFCONFIG"
 
-          echo "CONFIG_CC_VERSION_TEXT:"
-          grep '^CONFIG_CC_VERSION_TEXT' out/.config || true
-
-          echo 'CONFIG_LOCALVERSION="-OC"' >> out/.config
-
           make O=out ARCH=arm64 olddefconfig
+
+          echo "Kernel configuration prepared."
 
       - name: Build kernel
         run: |
@@ -82,55 +91,68 @@ jobs:
           export LLVM=1
           export LLVM_IAS=1
 
-          make -j"$(nproc)" \
+          echo "Starting kernel compilation..."
+
+          make \
             O=out \
             ARCH=arm64 \
             LLVM=1 \
-            LLVM_IAS=1
+            LLVM_IAS=1 \
+            -j"$(nproc)"
 
-      - name: Find kernel image
+      - name: Check kernel output
         run: |
           set -e
 
-          echo "Searching kernel images..."
-
+          echo "Kernel output files:"
           find out/arch/arm64/boot \
-            -maxdepth 3 \
+            -maxdepth 2 \
             -type f \
-            \( -name 'Image' -o -name 'Image.gz' -o -name 'Image.gz-dtb' -o -name 'dtbo.img' \) \
-            -print
+            -printf '%p\n' | sort
 
-          test -f out/arch/arm64/boot/Image
+          if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
+            echo "KERNEL_IMAGE=Image.gz-dtb" >> "$GITHUB_ENV"
+          elif [ -f out/arch/arm64/boot/Image.gz ]; then
+            echo "KERNEL_IMAGE=Image.gz" >> "$GITHUB_ENV"
+          elif [ -f out/arch/arm64/boot/Image ]; then
+            echo "KERNEL_IMAGE=Image" >> "$GITHUB_ENV"
+          else
+            echo "ERROR: Kernel image was not generated."
+            exit 1
+          fi
 
-      - name: Package kernel
+          echo "Selected kernel: $KERNEL_IMAGE"
+
+      - name: Create release package
         run: |
           set -e
 
           mkdir -p release
 
-          cp out/arch/arm64/boot/Image release/Image
+          cp "out/arch/arm64/boot/$KERNEL_IMAGE" \
+            "release/$KERNEL_IMAGE"
 
-          [ -f out/arch/arm64/boot/Image.gz ] && \
-            cp out/arch/arm64/boot/Image.gz release/Image.gz || true
-
-          [ -f out/arch/arm64/boot/Image.gz-dtb ] && \
-            cp out/arch/arm64/boot/Image.gz-dtb release/Image.gz-dtb || true
-
-          [ -f out/System.map ] && \
-            cp out/System.map release/System.map || true
+          if [ -f out/System.map ]; then
+            cp out/System.map release/System.map
+          fi
 
           cp out/.config release/kernel.config
 
-          sha256sum release/* > release/SHA256SUMS
+          if [ -f out/vmlinux ]; then
+            cp out/vmlinux release/vmlinux
+          fi
 
           cd release
-          zip -9 ../Surya-OC-Kernel-54d2de1.zip *
+          sha256sum * > SHA256SUMS
           cd ..
 
-      - name: Upload kernel artifact
+          zip -9 -r \
+            Surya-OC-Kernel-54d2de1.zip \
+            release
+
+      - name: Upload kernel
         uses: actions/upload-artifact@v4
         with:
           name: Surya-OC-Kernel-54d2de1
           path: |
             Surya-OC-Kernel-54d2de1.zip
-            release/
