@@ -11,6 +11,7 @@ jobs:
       contents: read
 
     steps:
+
       - name: Checkout kernel source
         uses: actions/checkout@v4
         with:
@@ -18,63 +19,113 @@ jobs:
           ref: main
           fetch-depth: 0
 
+      - name: Show source commit
+        run: |
+          set -e
+
+          echo "Current commit:"
+          git rev-parse HEAD
+
+          echo "Recent commits:"
+          git log --oneline -10
+
+          echo "Checking OC-related source:"
+          grep -Rni "OVERCLOCK\|2133\|895000000" \
+            arch/arm64/boot/dts/qcom 2>/dev/null || true
+
       - name: Install dependencies
         run: |
           set -e
+
           sudo apt-get update
+
           sudo apt-get install -y \
-            bc bison flex build-essential \
-            libssl-dev libelf-dev python3 \
-            cpio rsync device-tree-compiler \
-            clang lld llvm git curl
+            bc \
+            bison \
+            flex \
+            build-essential \
+            libssl-dev \
+            libelf-dev \
+            python3 \
+            cpio \
+            rsync \
+            device-tree-compiler \
+            clang \
+            lld \
+            llvm \
+            git \
+            curl
 
-      - name: Show kernel source
+      - name: Download KernelSU
         run: |
-          set -e
-          echo "Commit:"
-          git rev-parse HEAD
-          echo "Kconfig:"
-          grep -n "kernelsu" drivers/Kconfig || true
-          echo "KernelSU directory:"
-          ls -la drivers/kernelsu 2>/dev/null || true
-
-            - name: Download KernelSU
-         run: |
           set -e
 
           mkdir -p drivers
+
+          echo "Downloading KernelSU..."
 
           curl -L --fail \
             https://github.com/tiann/KernelSU/archive/refs/heads/main.tar.gz \
             -o /tmp/kernelsu.tar.gz
 
+          echo "KernelSU archive downloaded:"
+          ls -lh /tmp/kernelsu.tar.gz
+
           rm -rf /tmp/kernelsu
           mkdir -p /tmp/kernelsu
 
-          tar -xzf /tmp/kernelsu.tar.gz -C /tmp/kernelsu
+          echo "Extracting KernelSU..."
 
-          KSU_DIR=$(find /tmp/kernelsu -maxdepth 1 -type d -name 'KernelSU-*' | head -n 1)
+          tar -xzf /tmp/kernelsu.tar.gz \
+            -C /tmp/kernelsu
+
+          KSU_DIR=$(find /tmp/kernelsu \
+            -maxdepth 1 \
+            -type d \
+            -name 'KernelSU-*' \
+            | head -n 1)
 
           if [ -z "$KSU_DIR" ]; then
-            echo "ERROR: KernelSU archive extraction failed."
+            echo "ERROR: KernelSU extraction failed."
+            find /tmp/kernelsu -maxdepth 2 -type f | head -50
             exit 1
           fi
 
+          echo "KernelSU directory:"
+          echo "$KSU_DIR"
+
           rm -rf drivers/kernelsu
+
           cp -a "$KSU_DIR" drivers/kernelsu
 
           if [ ! -f drivers/kernelsu/Kconfig ]; then
             echo "ERROR: drivers/kernelsu/Kconfig not found."
-            find drivers/kernelsu -maxdepth 2 -type f | head -50
+
+            echo "KernelSU files:"
+            find drivers/kernelsu -maxdepth 2 -type f | head -100
+
             exit 1
           fi
 
           echo "KernelSU installed successfully."
-          ls -l drivers/kernelsu/Kconfig
+
+          ls -lh drivers/kernelsu/Kconfig
+
+      - name: Verify Kconfig
+        run: |
+          set -e
+
+          echo "drivers/Kconfig KernelSU entry:"
+          grep -n "kernelsu" drivers/Kconfig || true
+
+          echo "KernelSU Kconfig:"
+          head -30 drivers/kernelsu/Kconfig
 
       - name: Find Surya defconfig
         run: |
           set -e
+
+          echo "Searching for Surya defconfig..."
 
           for cfg in \
             surya_defconfig \
@@ -84,23 +135,57 @@ jobs:
             sm7150_defconfig
           do
             if [ -f "arch/arm64/configs/$cfg" ]; then
+              echo "Found defconfig: $cfg"
               echo "DEFCONFIG=$cfg" >> "$GITHUB_ENV"
-              echo "Using $cfg"
               exit 0
             fi
           done
 
-          echo "ERROR: Surya defconfig not found."
+          echo "ERROR: No compatible Surya defconfig found."
+
+          echo "Available defconfigs:"
+          find arch/arm64/configs \
+            -maxdepth 3 \
+            -type f \
+            | grep -Ei 'surya|sm6150|sm7150' \
+            || true
+
           exit 1
 
-      - name: Prepare configuration
+      - name: Prepare kernel configuration
         run: |
           set -e
 
           mkdir -p out
 
-          make O=out ARCH=arm64 "$DEFCONFIG"
-          make O=out ARCH=arm64 olddefconfig
+          echo "Using:"
+          echo "$DEFCONFIG"
+
+          make \
+            O=out \
+            ARCH=arm64 \
+            "$DEFCONFIG"
+
+          make \
+            O=out \
+            ARCH=arm64 \
+            olddefconfig
+
+          echo "Kernel configuration completed."
+
+      - name: Verify important configuration
+        run: |
+          set -e
+
+          echo "Checking KernelSU configuration..."
+
+          grep -E \
+            'CONFIG_KSU|CONFIG_KPROBES|CONFIG_OVERLAY_FS' \
+            out/.config \
+            || true
+
+          echo "Checking kernel config size:"
+          wc -l out/.config
 
       - name: Build kernel
         run: |
@@ -111,6 +196,10 @@ jobs:
           export LLVM=1
           export LLVM_IAS=1
 
+          echo "================================="
+          echo "Starting Surya kernel compilation"
+          echo "================================="
+
           make \
             O=out \
             ARCH=arm64 \
@@ -118,47 +207,93 @@ jobs:
             LLVM_IAS=1 \
             -j"$(nproc)"
 
-      - name: Check kernel image
+      - name: Check generated kernel
         run: |
           set -e
+
+          echo "================================="
+          echo "Kernel output"
+          echo "================================="
 
           find out/arch/arm64/boot \
             -maxdepth 2 \
             -type f \
-            -printf '%p\n' | sort
+            -printf '%p\n' \
+            | sort
 
           if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
+
             echo "KERNEL_IMAGE=Image.gz-dtb" >> "$GITHUB_ENV"
+
           elif [ -f out/arch/arm64/boot/Image.gz ]; then
+
             echo "KERNEL_IMAGE=Image.gz" >> "$GITHUB_ENV"
+
           elif [ -f out/arch/arm64/boot/Image ]; then
+
             echo "KERNEL_IMAGE=Image" >> "$GITHUB_ENV"
+
           else
-            echo "ERROR: Kernel image not generated."
+
+            echo "ERROR: Kernel image was not generated."
             exit 1
+
           fi
 
-      - name: Package
+          echo "Selected image:"
+          echo "$KERNEL_IMAGE"
+
+      - name: Verify OC source is present
         run: |
           set -e
 
+          echo "================================="
+          echo "OC source verification"
+          echo "================================="
+
+          grep -Rni \
+            "OVERCLOCK\|2133\|895000000" \
+            arch/arm64/boot/dts/qcom \
+            2>/dev/null \
+            || true
+
+          echo "Kernel image size:"
+          ls -lh "out/arch/arm64/boot/$KERNEL_IMAGE"
+
+      - name: Create release package
+        run: |
+          set -e
+
+          rm -rf release
           mkdir -p release
 
-          cp "out/arch/arm64/boot/$KERNEL_IMAGE" release/
+          cp \
+            "out/arch/arm64/boot/$KERNEL_IMAGE" \
+            "release/$KERNEL_IMAGE"
 
-          [ -f out/System.map ] && cp out/System.map release/ || true
-          [ -f out/vmlinux ] && cp out/vmlinux release/ || true
+          if [ -f out/System.map ]; then
+            cp out/System.map release/System.map
+          fi
+
+          if [ -f out/vmlinux ]; then
+            cp out/vmlinux release/vmlinux
+          fi
 
           cp out/.config release/kernel.config
 
           cd release
+
           sha256sum * > SHA256SUMS
+
           cd ..
 
-          zip -9 -r Surya-OC-Kernel.zip release
+          zip -9 -r \
+            Surya-OC-Kernel.zip \
+            release
 
-      - name: Upload
+      - name: Upload kernel artifact
         uses: actions/upload-artifact@v4
         with:
           name: Surya-OC-Kernel
           path: Surya-OC-Kernel.zip
+          if-no-files-found: error
