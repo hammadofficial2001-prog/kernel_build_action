@@ -20,36 +20,47 @@ jobs:
 
       - name: Install dependencies
         run: |
+          set -e
           sudo apt-get update
           sudo apt-get install -y \
-            bc \
-            bison \
-            flex \
-            build-essential \
-            libssl-dev \
-            libelf-dev \
-            python3 \
-            cpio \
-            rsync \
-            device-tree-compiler \
-            clang \
-            lld \
-            llvm \
-            git
+            bc bison flex build-essential \
+            libssl-dev libelf-dev python3 \
+            cpio rsync device-tree-compiler \
+            clang lld llvm git curl
 
-      - name: Add KernelSU
+      - name: Show kernel source
+        run: |
+          set -e
+          echo "Commit:"
+          git rev-parse HEAD
+          echo "Kconfig:"
+          grep -n "kernelsu" drivers/Kconfig || true
+          echo "KernelSU directory:"
+          ls -la drivers/kernelsu 2>/dev/null || true
+
+      - name: Download KernelSU
         run: |
           set -e
 
-          rm -rf drivers/kernelsu
+          mkdir -p drivers
 
-          git clone --depth=1 \
-            https://github.com/tiann/KernelSU.git \
-            drivers/kernelsu
+          curl -L --fail \
+            https://github.com/tiann/KernelSU/archive/refs/heads/main.tar.gz \
+            -o /tmp/kernelsu.tar.gz
+
+          rm -rf /tmp/kernelsu
+          mkdir -p /tmp/kernelsu
+
+          tar -xzf /tmp/kernelsu.tar.gz \
+            -C /tmp/kernelsu \
+            --strip-components=1
+
+          rm -rf drivers/kernelsu
+          cp -a /tmp/kernelsu drivers/kernelsu
 
           test -f drivers/kernelsu/Kconfig
 
-          echo "KernelSU Kconfig found:"
+          echo "KernelSU successfully installed."
           ls -l drivers/kernelsu/Kconfig
 
       - name: Find Surya defconfig
@@ -64,13 +75,13 @@ jobs:
             sm7150_defconfig
           do
             if [ -f "arch/arm64/configs/$cfg" ]; then
-              echo "Found: $cfg"
               echo "DEFCONFIG=$cfg" >> "$GITHUB_ENV"
+              echo "Using $cfg"
               exit 0
             fi
           done
 
-          echo "ERROR: No Surya defconfig found"
+          echo "ERROR: Surya defconfig not found."
           exit 1
 
       - name: Prepare configuration
@@ -80,7 +91,6 @@ jobs:
           mkdir -p out
 
           make O=out ARCH=arm64 "$DEFCONFIG"
-
           make O=out ARCH=arm64 olddefconfig
 
       - name: Build kernel
@@ -115,21 +125,20 @@ jobs:
           elif [ -f out/arch/arm64/boot/Image ]; then
             echo "KERNEL_IMAGE=Image" >> "$GITHUB_ENV"
           else
-            echo "ERROR: No kernel image generated"
+            echo "ERROR: Kernel image not generated."
             exit 1
           fi
 
-      - name: Package kernel
+      - name: Package
         run: |
           set -e
 
           mkdir -p release
 
-          cp "out/arch/arm64/boot/$KERNEL_IMAGE" \
-            "release/$KERNEL_IMAGE"
+          cp "out/arch/arm64/boot/$KERNEL_IMAGE" release/
 
-          [ -f out/System.map ] && cp out/System.map release/System.map || true
-          [ -f out/vmlinux ] && cp out/vmlinux release/vmlinux || true
+          [ -f out/System.map ] && cp out/System.map release/ || true
+          [ -f out/vmlinux ] && cp out/vmlinux release/ || true
 
           cp out/.config release/kernel.config
 
@@ -137,11 +146,9 @@ jobs:
           sha256sum * > SHA256SUMS
           cd ..
 
-          zip -9 -r \
-            Surya-OC-Kernel.zip \
-            release
+          zip -9 -r Surya-OC-Kernel.zip release
 
-      - name: Upload kernel
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
           name: Surya-OC-Kernel
