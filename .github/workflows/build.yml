@@ -30,7 +30,7 @@ jobs:
           git rev-parse HEAD
           git log --oneline -10
 
-      - name: Install build dependencies
+      - name: Install dependencies
         run: |
           set -e
 
@@ -51,7 +51,64 @@ jobs:
             g++ \
             git \
             curl \
-            unzip
+            unzip \
+            binutils-aarch64-linux-gnu \
+            gcc-aarch64-linux-gnu \
+            gcc-arm-linux-gnueabi
+
+      - name: Download Clang
+        run: |
+          set -e
+
+          mkdir -p "$HOME/toolchains"
+
+          git clone \
+            --depth=1 \
+            https://github.com/llvm/llvm-project.git \
+            "$HOME/toolchains/llvm-project"
+
+          cd "$HOME/toolchains/llvm-project"
+
+          git checkout llvmorg-12.0.1
+
+          mkdir -p build
+
+          cmake -S llvm -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLLVM_ENABLE_PROJECTS="clang;lld" \
+            -DLLVM_TARGETS_TO_BUILD="AArch64;ARM;X86" \
+            -DCMAKE_INSTALL_PREFIX="$HOME/toolchains/clang"
+
+          cmake --build build \
+            --target clang lld \
+            -j"$(nproc)"
+
+          cmake --install build
+
+      - name: Check toolchain
+        run: |
+          set -e
+
+          export PATH="$HOME/toolchains/clang/bin:$PATH"
+
+          echo "================================="
+          echo "CLANG"
+          echo "================================="
+
+          clang --version
+          ld.lld --version
+
+          echo "================================="
+          echo "ARM64 GCC"
+          echo "================================="
+
+          aarch64-linux-gnu-gcc --version
+
+          echo "================================="
+          echo "ARM32 GCC"
+          echo "================================="
+
+          arm-linux-gnueabi-gcc --version
 
       - name: Download KernelSU
         run: |
@@ -125,48 +182,57 @@ jobs:
         run: |
           set -e
 
+          export PATH="$HOME/toolchains/clang/bin:$PATH"
+
           rm -rf out
           mkdir -p out
 
           make \
             O=out \
             ARCH=arm64 \
+            CC=clang \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
             "$DEFCONFIG"
 
           make \
             O=out \
             ARCH=arm64 \
+            CC=clang \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
             olddefconfig
-
-      - name: Check compiler
-        run: |
-          echo "GCC:"
-          gcc --version
-
-          echo "G++:"
-          g++ --version
 
       - name: Build kernel
         run: |
           set -e
 
+          export PATH="$HOME/toolchains/clang/bin:$PATH"
+
           export ARCH=arm64
           export SUBARCH=arm64
 
-          unset LLVM
-          unset LLVM_IAS
-          unset CC
-          unset HOSTCC
-
           echo "================================="
-          echo "BUILDING WITH GCC"
+          echo "BUILDING SURYA OC KERNEL"
           echo "================================="
 
           make \
             O=out \
             ARCH=arm64 \
+            CC=clang \
+            LD=ld.lld \
+            AR=llvm-ar \
+            NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip \
             HOSTCC=gcc \
-            CC=gcc \
+            HOSTCXX=g++ \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
             -j"$(nproc)"
 
       - name: Check kernel image
@@ -184,22 +250,17 @@ jobs:
             | sort
 
           if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
-
             echo "KERNEL_IMAGE=Image.gz-dtb" >> "$GITHUB_ENV"
 
           elif [ -f out/arch/arm64/boot/Image.gz ]; then
-
             echo "KERNEL_IMAGE=Image.gz" >> "$GITHUB_ENV"
 
           elif [ -f out/arch/arm64/boot/Image ]; then
-
             echo "KERNEL_IMAGE=Image" >> "$GITHUB_ENV"
 
           else
-
             echo "ERROR: Kernel image was not generated."
             exit 1
-
           fi
 
           echo "Selected image:"
@@ -218,6 +279,17 @@ jobs:
             arch/arm64/boot/dts/qcom \
             2>/dev/null \
             || true
+
+      - name: Check compiler
+        run: |
+          set -e
+
+          if [ -f out/include/generated/compile.h ]; then
+            grep -E \
+              "LINUX_COMPILER|LINUX_COMPILE_BY|LINUX_COMPILE_HOST" \
+              out/include/generated/compile.h \
+              || true
+          fi
 
       - name: Package kernel
         run: |
