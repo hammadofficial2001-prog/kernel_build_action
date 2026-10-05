@@ -19,19 +19,25 @@ jobs:
           ref: main
           fetch-depth: 0
 
-      - name: Show source commit
+      - name: Show source information
         run: |
           set -e
 
-          echo "Current commit:"
-          git rev-parse HEAD
+          echo "================================="
+          echo "SOURCE COMMIT"
+          echo "================================="
 
-          echo "Recent commits:"
+          git rev-parse HEAD
           git log --oneline -10
 
-          echo "Checking OC-related source:"
-          grep -Rni "OVERCLOCK\|2133\|895000000" \
-            arch/arm64/boot/dts/qcom 2>/dev/null || true
+          echo "================================="
+          echo "CHECKING OC SOURCE"
+          echo "================================="
+
+          grep -Rni \
+            "OVERCLOCK\|2133\|895000000" \
+            arch/arm64/boot/dts/qcom \
+            2>/dev/null || true
 
       - name: Install dependencies
         run: |
@@ -54,29 +60,30 @@ jobs:
             lld \
             llvm \
             git \
-            curl
+            curl \
+            unzip
 
       - name: Download KernelSU
         run: |
           set -e
 
-          mkdir -p drivers
+          echo "================================="
+          echo "DOWNLOADING KERNELSU"
+          echo "================================="
 
-          echo "Downloading KernelSU..."
+          mkdir -p drivers
 
           curl -L --fail \
             https://github.com/tiann/KernelSU/archive/refs/heads/main.tar.gz \
             -o /tmp/kernelsu.tar.gz
 
-          echo "KernelSU archive downloaded:"
           ls -lh /tmp/kernelsu.tar.gz
 
           rm -rf /tmp/kernelsu
           mkdir -p /tmp/kernelsu
 
-          echo "Extracting KernelSU..."
-
-          tar -xzf /tmp/kernelsu.tar.gz \
+          tar -xzf \
+            /tmp/kernelsu.tar.gz \
             -C /tmp/kernelsu
 
           KSU_DIR=$(find /tmp/kernelsu \
@@ -86,46 +93,85 @@ jobs:
             | head -n 1)
 
           if [ -z "$KSU_DIR" ]; then
-            echo "ERROR: KernelSU extraction failed."
-            find /tmp/kernelsu -maxdepth 2 -type f | head -50
+            echo "ERROR: KernelSU directory not found."
             exit 1
           fi
 
-          echo "KernelSU directory:"
+          echo "KernelSU source:"
           echo "$KSU_DIR"
 
           rm -rf drivers/kernelsu
 
-          cp -a "$KSU_DIR" drivers/kernelsu
+          cp -a \
+            "$KSU_DIR" \
+            drivers/kernelsu
 
-          if [ ! -f drivers/kernelsu/Kconfig ]; then
-            echo "ERROR: drivers/kernelsu/Kconfig not found."
+          echo "================================="
+          echo "KERNELSU STRUCTURE"
+          echo "================================="
 
-            echo "KernelSU files:"
-            find drivers/kernelsu -maxdepth 2 -type f | head -100
+          find drivers/kernelsu/kernel \
+            -maxdepth 2 \
+            -type f \
+            | sort \
+            | head -100
 
-            exit 1
-          fi
-
-          echo "KernelSU installed successfully."
-
-          ls -lh drivers/kernelsu/Kconfig
-
-      - name: Verify Kconfig
+      - name: Prepare KernelSU kernel layout
         run: |
           set -e
 
-          echo "drivers/Kconfig KernelSU entry:"
+          echo "================================="
+          echo "PREPARING KERNELSU KERNEL LAYOUT"
+          echo "================================="
+
+          test -f drivers/kernelsu/kernel/Kconfig
+          test -f drivers/kernelsu/kernel/Kbuild
+
+          echo "KernelSU kernel/Kconfig found."
+
+          # This kernel's drivers/Kconfig expects:
+          # drivers/kernelsu/Kconfig
+          #
+          # Current KernelSU stores the kernel integration inside:
+          # drivers/kernelsu/kernel/Kconfig
+          #
+          # Copy the kernel integration files into the location
+          # expected by this kernel tree.
+
+          cp -a \
+            drivers/kernelsu/kernel/. \
+            drivers/kernelsu/
+
+          echo "Checking expected Kconfig..."
+
+          if [ ! -f drivers/kernelsu/Kconfig ]; then
+            echo "ERROR: drivers/kernelsu/Kconfig still missing."
+            exit 1
+          fi
+
+          echo "SUCCESS:"
+          ls -lh drivers/kernelsu/Kconfig
+
+      - name: Check KernelSU Kconfig entry
+        run: |
+          set -e
+
+          echo "================================="
+          echo "KERNELSU KCONFIG CHECK"
+          echo "================================="
+
           grep -n "kernelsu" drivers/Kconfig || true
 
-          echo "KernelSU Kconfig:"
-          head -30 drivers/kernelsu/Kconfig
+          echo "Top-level KernelSU Kconfig:"
+          head -80 drivers/kernelsu/Kconfig
 
       - name: Find Surya defconfig
         run: |
           set -e
 
-          echo "Searching for Surya defconfig..."
+          echo "================================="
+          echo "FINDING SURYA DEFCONFIG"
+          echo "================================="
 
           for cfg in \
             surya_defconfig \
@@ -135,19 +181,22 @@ jobs:
             sm7150_defconfig
           do
             if [ -f "arch/arm64/configs/$cfg" ]; then
-              echo "Found defconfig: $cfg"
+              echo "Found:"
+              echo "$cfg"
+
               echo "DEFCONFIG=$cfg" >> "$GITHUB_ENV"
+
               exit 0
             fi
           done
 
           echo "ERROR: No compatible Surya defconfig found."
 
-          echo "Available defconfigs:"
           find arch/arm64/configs \
             -maxdepth 3 \
             -type f \
-            | grep -Ei 'surya|sm6150|sm7150' \
+            | grep -Ei \
+              'surya|sm6150|sm7150' \
             || true
 
           exit 1
@@ -156,10 +205,13 @@ jobs:
         run: |
           set -e
 
-          mkdir -p out
+          echo "================================="
+          echo "PREPARING KERNEL CONFIG"
+          echo "================================="
 
-          echo "Using:"
-          echo "$DEFCONFIG"
+          rm -rf out
+
+          mkdir -p out
 
           make \
             O=out \
@@ -171,20 +223,22 @@ jobs:
             ARCH=arm64 \
             olddefconfig
 
-          echo "Kernel configuration completed."
+          echo "Configuration completed."
 
-      - name: Verify important configuration
+      - name: Verify configuration
         run: |
           set -e
 
-          echo "Checking KernelSU configuration..."
+          echo "================================="
+          echo "CONFIG VERIFICATION"
+          echo "================================="
 
           grep -E \
             'CONFIG_KSU|CONFIG_KPROBES|CONFIG_OVERLAY_FS' \
             out/.config \
             || true
 
-          echo "Checking kernel config size:"
+          echo "Config lines:"
           wc -l out/.config
 
       - name: Build kernel
@@ -193,11 +247,12 @@ jobs:
 
           export ARCH=arm64
           export SUBARCH=arm64
+
           export LLVM=1
           export LLVM_IAS=1
 
           echo "================================="
-          echo "Starting Surya kernel compilation"
+          echo "BUILDING SURYA KERNEL"
           echo "================================="
 
           make \
@@ -207,12 +262,12 @@ jobs:
             LLVM_IAS=1 \
             -j"$(nproc)"
 
-      - name: Check generated kernel
+      - name: Check kernel image
         run: |
           set -e
 
           echo "================================="
-          echo "Kernel output"
+          echo "KERNEL OUTPUT"
           echo "================================="
 
           find out/arch/arm64/boot \
@@ -235,7 +290,8 @@ jobs:
 
           else
 
-            echo "ERROR: Kernel image was not generated."
+            echo "ERROR: No kernel image generated."
+
             exit 1
 
           fi
@@ -243,12 +299,12 @@ jobs:
           echo "Selected image:"
           echo "$KERNEL_IMAGE"
 
-      - name: Verify OC source is present
+      - name: Verify OC source
         run: |
           set -e
 
           echo "================================="
-          echo "OC source verification"
+          echo "OC VERIFICATION"
           echo "================================="
 
           grep -Rni \
@@ -257,29 +313,33 @@ jobs:
             2>/dev/null \
             || true
 
-          echo "Kernel image size:"
-          ls -lh "out/arch/arm64/boot/$KERNEL_IMAGE"
+          echo "Generated image:"
+          ls -lh \
+            "out/arch/arm64/boot/$KERNEL_IMAGE"
 
-      - name: Create release package
+      - name: Create package
         run: |
           set -e
 
           rm -rf release
+
           mkdir -p release
 
           cp \
             "out/arch/arm64/boot/$KERNEL_IMAGE" \
-            "release/$KERNEL_IMAGE"
+            release/
 
           if [ -f out/System.map ]; then
-            cp out/System.map release/System.map
+            cp out/System.map release/
           fi
 
           if [ -f out/vmlinux ]; then
-            cp out/vmlinux release/vmlinux
+            cp out/vmlinux release/
           fi
 
-          cp out/.config release/kernel.config
+          cp \
+            out/.config \
+            release/kernel.config
 
           cd release
 
@@ -291,7 +351,7 @@ jobs:
             Surya-OC-Kernel.zip \
             release
 
-      - name: Upload kernel artifact
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: Surya-OC-Kernel
