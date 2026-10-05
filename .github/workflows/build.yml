@@ -1,4 +1,4 @@
-name: Build POCO X3 NFC Surya Kernel
+name: Build Surya OC Kernel
 
 on:
   workflow_dispatch:
@@ -11,116 +11,125 @@ jobs:
       contents: read
 
     steps:
-      - name: Checkout build repository
+      - name: Checkout source
         uses: actions/checkout@v4
+        with:
+          ref: 54d2de1a74b791873769799d7afa4b0007dcc2d7
+          fetch-depth: 1
 
       - name: Install build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            bc \
-            bison \
-            build-essential \
-            cpio \
-            flex \
-            git \
-            libelf-dev \
-            libssl-dev \
-            libncurses5-dev \
-            python3 \
-            python-is-python3 \
-            zip \
-            gcc-aarch64-linux-gnu \
-            binutils-aarch64-linux-gnu \
-            gcc-arm-linux-gnueabi \
-            binutils-arm-linux-gnueabi
+            bc bison flex build-essential \
+            libssl-dev libelf-dev \
+            python3 cpio rsync \
+            device-tree-compiler \
+            clang lld llvm
 
-      - name: Clone Surya kernel source
+      - name: Show source
         run: |
-          git clone --depth=1 \
-            -b staging/main \
-            https://github.com/stormbreaker-project/kernel_xiaomi_surya.git \
-            kernel
+          echo "Commit:"
+          git rev-parse HEAD
+          echo "Kernel tree:"
+          ls -la
+          echo "Defconfigs:"
+          find arch/arm64/configs -type f | grep -Ei 'surya|sm6150|sm7150' || true
 
-      - name: Verify source
-        working-directory: kernel
+      - name: Detect defconfig
         run: |
-          test -f Makefile
-          test -d arch/arm64
-          test -f arch/arm64/configs/surya_defconfig
-          echo "Kernel source verified"
-          git log -1 --oneline
+          set -e
 
-      - name: Install LLVM
+          for cfg in \
+            surya_defconfig \
+            vendor/surya_defconfig \
+            vendor/xiaomi/surya_defconfig \
+            sm6150_defconfig \
+            sm7150_defconfig
+          do
+            if [ -f "arch/arm64/configs/$cfg" ]; then
+              echo "DEFCONFIG=$cfg" >> "$GITHUB_ENV"
+              echo "Using $cfg"
+              exit 0
+            fi
+          done
+
+          echo "No known Surya defconfig found."
+          exit 1
+
+      - name: Prepare kernel config
         run: |
-          sudo apt-get install -y clang llvm lld
+          set -e
 
-      - name: Prepare configuration
-        run: |
-          cd kernel
+          mkdir -p out
 
-          if [ -f ../surya_gilver_defconfig ]; then
-            cp ../surya_gilver_defconfig .config
-          else
-            make O=out ARCH=arm64 surya_defconfig
-          fi
+          make O=out ARCH=arm64 "$DEFCONFIG"
+
+          echo "CONFIG_CC_VERSION_TEXT:"
+          grep '^CONFIG_CC_VERSION_TEXT' out/.config || true
+
+          echo 'CONFIG_LOCALVERSION="-OC"' >> out/.config
 
           make O=out ARCH=arm64 olddefconfig
 
-          echo "Configuration prepared"
-          grep -E '^CONFIG_(ARM64|SMP|SCHED_WALT|PREEMPT|THERMAL)=' out/.config || true
-
       - name: Build kernel
-        working-directory: kernel
-        env:
-          ARCH: arm64
-          LLVM: "1"
-          LLVM_IAS: "1"
-          CROSS_COMPILE: aarch64-linux-gnu-
-          CROSS_COMPILE_ARM32: arm-linux-gnueabi-
         run: |
+          set -e
+
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export LLVM=1
+          export LLVM_IAS=1
+
           make -j"$(nproc)" \
             O=out \
             ARCH=arm64 \
             LLVM=1 \
-            LLVM_IAS=1 \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+            LLVM_IAS=1
 
       - name: Find kernel image
-        working-directory: kernel
         run: |
           set -e
 
-          echo "Searching kernel output..."
+          echo "Searching kernel images..."
 
           find out/arch/arm64/boot \
-            -maxdepth 2 \
+            -maxdepth 3 \
             -type f \
-            \( -name 'Image' -o -name 'Image.gz' -o -name 'Image.gz-dtb' \) \
+            \( -name 'Image' -o -name 'Image.gz' -o -name 'Image.gz-dtb' -o -name 'dtbo.img' \) \
             -print
 
-          test -f out/arch/arm64/boot/Image || \
-          test -f out/arch/arm64/boot/Image.gz || \
-          test -f out/arch/arm64/boot/Image.gz-dtb
+          test -f out/arch/arm64/boot/Image
 
-      - name: Collect build artifacts
+      - name: Package kernel
         run: |
+          set -e
+
           mkdir -p release
 
-          cp kernel/out/arch/arm64/boot/Image release/Image 2>/dev/null || true
-          cp kernel/out/arch/arm64/boot/Image.gz release/Image.gz 2>/dev/null || true
-          cp kernel/out/arch/arm64/boot/Image.gz-dtb release/Image.gz-dtb 2>/dev/null || true
+          cp out/arch/arm64/boot/Image release/Image
 
-          cp kernel/out/.config release/kernel.config 2>/dev/null || true
-          cp kernel/System.map release/System.map 2>/dev/null || true
+          [ -f out/arch/arm64/boot/Image.gz ] && \
+            cp out/arch/arm64/boot/Image.gz release/Image.gz || true
+
+          [ -f out/arch/arm64/boot/Image.gz-dtb ] && \
+            cp out/arch/arm64/boot/Image.gz-dtb release/Image.gz-dtb || true
+
+          [ -f out/System.map ] && \
+            cp out/System.map release/System.map || true
+
+          cp out/.config release/kernel.config
+
+          sha256sum release/* > release/SHA256SUMS
 
           cd release
-          sha256sum * > SHA256SUMS
+          zip -9 ../Surya-OC-Kernel-54d2de1.zip *
+          cd ..
 
-      - name: Upload kernel
+      - name: Upload kernel artifact
         uses: actions/upload-artifact@v4
         with:
-          name: POCO-X3-Surya-Kernel
-          path: release/
-          if-no-files-found: error
+          name: Surya-OC-Kernel-54d2de1
+          path: |
+            Surya-OC-Kernel-54d2de1.zip
+            release/
