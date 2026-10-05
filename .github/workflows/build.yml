@@ -38,8 +38,8 @@ jobs:
           echo "KernelSU directory:"
           ls -la drivers/kernelsu 2>/dev/null || true
 
-      - name: Download KernelSU
-        run: |
+            - name: Download KernelSU
+         run: |
           set -e
 
           mkdir -p drivers
@@ -51,16 +51,25 @@ jobs:
           rm -rf /tmp/kernelsu
           mkdir -p /tmp/kernelsu
 
-          tar -xzf /tmp/kernelsu.tar.gz \
-            -C /tmp/kernelsu \
-            --strip-components=1
+          tar -xzf /tmp/kernelsu.tar.gz -C /tmp/kernelsu
+
+          KSU_DIR=$(find /tmp/kernelsu -maxdepth 1 -type d -name 'KernelSU-*' | head -n 1)
+
+          if [ -z "$KSU_DIR" ]; then
+            echo "ERROR: KernelSU archive extraction failed."
+            exit 1
+          fi
 
           rm -rf drivers/kernelsu
-          cp -a /tmp/kernelsu drivers/kernelsu
+          cp -a "$KSU_DIR" drivers/kernelsu
 
-          test -f drivers/kernelsu/Kconfig
+          if [ ! -f drivers/kernelsu/Kconfig ]; then
+            echo "ERROR: drivers/kernelsu/Kconfig not found."
+            find drivers/kernelsu -maxdepth 2 -type f | head -50
+            exit 1
+          fi
 
-          echo "KernelSU successfully installed."
+          echo "KernelSU installed successfully."
           ls -l drivers/kernelsu/Kconfig
 
       - name: Find Surya defconfig
