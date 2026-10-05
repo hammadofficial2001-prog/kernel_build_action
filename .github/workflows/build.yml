@@ -1,136 +1,46 @@
-name: Build Surya A13 Performance Kernel
+name: Diagnose Surya Kernel OPP
 
 on:
   workflow_dispatch:
 
 jobs:
-  build:
+  diagnose:
     runs-on: ubuntu-22.04
 
-    permissions:
-      contents: read
-
     steps:
-      - name: Checkout kernel source
+      - name: Checkout StormBreaker
         uses: actions/checkout@v4
         with:
           repository: stormbreaker-project/kernel_xiaomi_surya
           ref: staging/main
           path: kernel
 
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            bc bison build-essential cpio flex \
-            gcc-aarch64-linux-gnu \
-            libelf-dev libssl-dev \
-            clang lld llvm \
-            python3 rsync zip unzip
-
-      - name: Find Surya defconfig
+      - name: Search CPU GPU OPP
         run: |
           cd kernel
 
-          DEFCONFIG=$(find arch/arm64/configs -type f \
-            -name 'surya_defconfig' | head -n 1)
+          echo "========== KERNEL =========="
+          git log -1 --oneline
+          echo
 
-          if [ -z "$DEFCONFIG" ]; then
-            echo "ERROR: surya_defconfig not found"
-            find arch/arm64/configs -type f | grep -Ei 'surya|sm6150' || true
-            exit 1
-          fi
+          echo "========== DEFCONFIG =========="
+          find arch/arm64/configs -type f | grep -Ei 'surya|sm6150' || true
+          echo
 
-          echo "DEFCONFIG=$DEFCONFIG" >> "$GITHUB_ENV"
-          echo "Using: $DEFCONFIG"
+          echo "========== CPU FREQUENCY =========="
+          grep -RniE '2304000|1804800|cpu.?opp|opp-hz|opp-microvolt|opp-supported-hw' \
+            arch/arm64/boot/dts 2>/dev/null | head -300 || true
+          echo
 
-      - name: Configure kernel
-        run: |
-          cd kernel
+          echo "========== GPU FREQUENCY =========="
+          grep -RniE '800000000|650000000|565000000|gpu.*opp|opp-hz|opp-microvolt|kgsl' \
+            arch/arm64/boot/dts 2>/dev/null | head -300 || true
+          echo
 
-          make O=out \
-            ARCH=arm64 \
-            LLVM=1 \
-            LLVM_IAS=1 \
-            surya_defconfig
+          echo "========== KGSL =========="
+          grep -RniE '800000000|650000000|565000000|gpu_available_frequencies|freq_table' \
+            drivers 2>/dev/null | head -300 || true
+          echo
 
-      - name: Performance configuration
-        run: |
-          cd kernel
-
-          scripts/config --file out/.config \
-            --enable CONFIG_PREEMPT \
-            --enable CONFIG_HIGH_RES_TIMERS \
-            --enable CONFIG_CPU_FREQ \
-            --enable CONFIG_CPU_FREQ_GOV_SCHEDUTIL \
-            --enable CONFIG_CPU_FREQ_GOV_PERFORMANCE
-
-          make O=out \
-            ARCH=arm64 \
-            LLVM=1 \
-            LLVM_IAS=1 \
-            olddefconfig
-
-      - name: Build kernel
-        run: |
-          cd kernel
-
-          make -j"$(nproc)" \
-            O=out \
-            ARCH=arm64 \
-            LLVM=1 \
-            LLVM_IAS=1 \
-            CROSS_COMPILE=aarch64-linux-gnu-
-
-      - name: Check kernel image
-        run: |
-          cd kernel
-
-          if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
-            cp out/arch/arm64/boot/Image.gz-dtb "$GITHUB_WORKSPACE/Image.gz-dtb"
-          elif [ -f out/arch/arm64/boot/Image.gz ]; then
-            cp out/arch/arm64/boot/Image.gz "$GITHUB_WORKSPACE/Image.gz"
-          else
-            echo "ERROR: Kernel image not found"
-            exit 1
-          fi
-
-          sha256sum "$GITHUB_WORKSPACE"/Image.gz* \
-            | tee "$GITHUB_WORKSPACE/SHA256SUMS"
-
-      - name: Download AnyKernel3
-        run: |
-          git clone --depth=1 \
-            https://github.com/osm0sis/AnyKernel3.git \
-            AnyKernel3
-
-      - name: Package Surya kernel
-        run: |
-          if [ -f Image.gz-dtb ]; then
-            cp Image.gz-dtb AnyKernel3/Image.gz-dtb
-          else
-            cp Image.gz AnyKernel3/Image.gz
-          fi
-
-          cd AnyKernel3
-
-          sed -i \
-            's|device.name1=.*|device.name1=surya|' \
-            anykernel.sh || true
-
-          sed -i \
-            's|device.name2=.*|device.name2=karna|' \
-            anykernel.sh || true
-
-          zip -r9 \
-            "$GITHUB_WORKSPACE/Surya-A13-Performance-Kernel.zip" \
-            . \
-            -x '.git/*' '*.md'
-
-      - name: Upload kernel
-        uses: actions/upload-artifact@v4
-        with:
-          name: Surya-A13-Performance-Kernel
-          path: |
-            Surya-A13-Performance-Kernel.zip
-            SHA256SUMS
+          echo "========== DTS FILES =========="
+          find arch/arm64/boot/dts -type f | grep -Ei 'sm6150|surya|gpu|cpu' | head -300 || true
