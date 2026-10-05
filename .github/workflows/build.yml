@@ -14,8 +14,9 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
         with:
-          ref: 54d2de1a74b791873769799d7afa4b0007dcc2d7
-          fetch-depth: 1
+          with:
+            ref: main
+           fetch-depth: 0
 
       - name: Install build dependencies
         run: |
