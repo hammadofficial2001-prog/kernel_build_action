@@ -1,8 +1,28 @@
+name: Find Surya Qualcomm OPP
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-22.04
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout Surya Kernel
+        uses: actions/checkout@v4
+        with:
+          repository: stormbreaker-project/kernel_xiaomi_surya
+          ref: staging/main
+          path: kernel
+
       - name: Find Surya Qualcomm OPP
         run: |
           cd kernel
 
-          echo "===== SURYA/SM6150 DTS FILES ====="
+          echo "===== SURYA / SM6150 DTS FILES ====="
           find arch/arm64/boot/dts -type f \
             \( -iname '*surya*' -o -iname '*sm6150*' -o -iname '*qcom*' \) \
             | head -200
@@ -11,16 +31,23 @@
           echo "===== CPU OPP: QUALCOMM ONLY ====="
           grep -RniE 'opp-hz|opp-microvolt|cpu[0-9]|cpufreq' \
             arch/arm64/boot/dts/qcom \
-            2>/dev/null | grep -E 'sm6150|surya|2304000|1804800' | head -200 || true
+            2>/dev/null \
+            | grep -E 'sm6150|surya|2304000|1804800' \
+            | head -200 || true
 
           echo
           echo "===== GPU OPP: QUALCOMM ONLY ====="
           grep -RniE '800000000|650000000|565000000|opp-hz|opp-microvolt|gpu|kgsl' \
             arch/arm64/boot/dts/qcom \
-            2>/dev/null | head -300 || true
+            2>/dev/null \
+            | head -300 || true
 
           echo
           echo "===== KGSL FREQUENCY ====="
           grep -RniE '800000000|650000000|565000000|freq_table|gpu_available_frequencies' \
             drivers/gpu \
-            2>/dev/null | head -300 || true
+            2>/dev/null \
+            | head -300 || true
+
+          echo
+          echo "===== DONE ====="
