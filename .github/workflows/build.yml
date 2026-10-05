@@ -1,45 +1,127 @@
-name: Surya Real OPP Scan
+name: Build POCO X3 NFC Surya Kernel
 
 on:
   workflow_dispatch:
 
 jobs:
-  scan:
+  build:
     runs-on: ubuntu-22.04
 
     permissions:
       contents: read
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          repository: stormbreaker-project/kernel_xiaomi_surya
-          ref: staging/main
-          path: kernel
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc \
+            bison \
+            build-essential \
+            flex \
+            git \
+            libssl-dev \
+            libelf-dev \
+            libncurses5-dev \
+            python3 \
+            ccache \
+            zip \
+            unzip \
+            rsync \
+            gcc-aarch64-linux-gnu \
+            gcc-arm-linux-gnueabi
 
-      - name: Scan Real OPP Tables
+      - name: Clone POCO X3 NFC Surya Kernel
+        run: |
+          git clone --depth=1 \
+            -b staging/LA.UM.9.x \
+            https://github.com/Stratosphere-Kernel/android_kernel_xiaomi_surya.git \
+            kernel
+
+      - name: Download Neutron Clang 17
+        run: |
+          git clone --depth=1 \
+            https://github.com/Neutron-Toolchains/clang.git \
+            --branch 17.x \
+            clang
+
+      - name: Verify Surya source
+        run: |
+          cd kernel
+          test -f arch/arm64/configs/surya_defconfig
+          echo "SURYA SOURCE OK"
+          echo "DEFCONFIG OK"
+          git log -1 --oneline
+
+      - name: Build kernel
         run: |
           cd kernel
 
-          echo "===== CPU OPP REFERENCES ====="
-          grep -RniE \
-            'opp-hz|opp-supported-hw|opp-microvolt|operating-points-v2|cpu[0-9].*opp|cpu.*freq' \
-            arch/arm64/boot/dts/qcom/sm6150.dtsi \
-            arch/arm64/boot/dts/qcom/sm6150.dts \
-            | head -n 300 || true
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
 
-          echo
-          echo "===== GPU OPP ====="
-          grep -RniE \
-            'opp-hz|opp-microvolt|800000000|650000000|565000000|430000000|355000000|267000000|180000000' \
-            arch/arm64/boot/dts/qcom/sm6150-gpu.dtsi \
-            | head -n 300 || true
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
-          echo
-          echo "===== CPU CLOCK VALUES ====="
-          grep -RniE \
-            '1804800|2304000|2457600|2400000|2500000' \
-            arch/arm64/boot/dts/qcom/sm6150.dtsi \
-            arch/arm64/boot/dts/qcom/sm6150.dts \
-            | head -n 200 || true
+          make O=out \
+            surya_defconfig \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            CC=clang \
+            LD=ld.lld \
+            AR=llvm-ar \
+            AS=llvm-as \
+            NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip
+
+          make -j"$(nproc)" O=out \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            CC=clang \
+            LD=ld.lld \
+            AR=llvm-ar \
+            AS=llvm-as \
+            NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip
+
+      - name: Verify kernel image
+        run: |
+          cd kernel
+
+          test -f out/arch/arm64/boot/Image
+
+          echo "================================"
+          echo "KERNEL BUILD SUCCESS"
+          echo "================================"
+
+          ls -lh out/arch/arm64/boot/Image
+
+      - name: Package artifacts
+        run: |
+          mkdir -p release
+
+          cp kernel/out/arch/arm64/boot/Image \
+            release/Image
+
+          cp kernel/out/.config \
+            release/kernel.config
+
+          if [ -f kernel/System.map ]; then
+            cp kernel/System.map release/System.map
+          elif [ -f kernel/out/System.map ]; then
+            cp kernel/out/System.map release/System.map
+          fi
+
+          sha256sum release/* > release/SHA256SUMS
+
+      - name: Upload kernel
+        uses: actions/upload-artifact@v4
+        with:
+          name: POCO-X3-NFC-Surya-Kernel
+          path: release/
