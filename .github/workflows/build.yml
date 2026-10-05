@@ -1,76 +1,55 @@
-name: Surya OPP Diagnostic
+name: Surya Exact OPP Check
 
 on:
   workflow_dispatch:
 
 jobs:
-  diagnose:
+  check:
     runs-on: ubuntu-22.04
 
     permissions:
       contents: read
 
     steps:
-      - name: Checkout Kernel
+      - name: Checkout Surya Kernel
         uses: actions/checkout@v4
         with:
           repository: stormbreaker-project/kernel_xiaomi_surya
           ref: staging/main
           path: kernel
 
-      - name: Diagnose CPU GPU OPP
+      - name: Check Exact Surya CPU GPU OPP
         shell: bash
         run: |
           set -u
           cd kernel
 
-          echo "===== KERNEL COMMIT ====="
-          git rev-parse HEAD
-          git log -1 --oneline
+          echo "===== CPU: sm6150.dtsi ====="
+          grep -n -B 8 -A 12 -E \
+            '1804800|2304000|2457600|opp-hz|opp-microvolt' \
+            arch/arm64/boot/dts/qcom/sm6150.dtsi \
+            || true
 
           echo
-          echo "===== SURYA DEFCONFIG ====="
-          find arch/arm64/configs -type f \
-            \( -iname '*surya*' -o -iname '*sm6150*' \) \
-            -print
+          echo "===== GPU: sm6150-gpu.dtsi ====="
+          grep -n -B 8 -A 12 -E \
+            '800000000|650000000|565000000|430000000|355000000|267000000|180000000|opp-hz|opp-microvolt' \
+            arch/arm64/boot/dts/qcom/sm6150-gpu.dtsi \
+            || true
 
           echo
-          echo "===== SURYA / SM6150 DTS ====="
-          find arch/arm64/boot/dts -type f \
-            \( -iname '*surya*' -o -iname '*sm6150*' \) \
-            -print
+          echo "===== CPU FREQUENCY TABLE ====="
+          grep -n -B 5 -A 20 -E \
+            '1804800|2304000|cpu-freq|cpufreq' \
+            arch/arm64/boot/dts/qcom/sm6150.dtsi \
+            || true
 
           echo
-          echo "===== CPU OPP ====="
-          grep -RniE \
-            'opp-hz|opp-microvolt|1804800|2304000|2457600' \
-            arch/arm64/boot/dts/qcom \
-            2>/dev/null \
-            | head -200 || true
+          echo "===== GPU FREQUENCY TABLE ====="
+          grep -n -B 5 -A 20 -E \
+            '800000000|650000000|565000000|430000000|freq-table|gpu' \
+            arch/arm64/boot/dts/qcom/sm6150-gpu.dtsi \
+            || true
 
           echo
-          echo "===== GPU OPP ====="
-          grep -RniE \
-            '800000000|650000000|565000000|430000000|opp-hz|kgsl|gpu' \
-            arch/arm64/boot/dts/qcom \
-            2>/dev/null \
-            | head -250 || true
-
-          echo
-          echo "===== KGSL SOURCE ====="
-          grep -RniE \
-            '800000000|650000000|565000000|freq_table|gpu_available_frequencies' \
-            drivers/gpu \
-            2>/dev/null \
-            | head -250 || true
-
-          echo
-          echo "===== SURYA REFERENCES ====="
-          grep -RniE \
-            'surya|sm6150' \
-            arch/arm64/boot/dts/qcom \
-            2>/dev/null \
-            | head -150 || true
-
-          echo
-          echo "===== DIAGNOSTIC COMPLETE ====="
+          echo "===== DONE ====="
