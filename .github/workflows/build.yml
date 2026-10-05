@@ -5,7 +5,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-20.04
 
     permissions:
       contents: read
@@ -19,7 +19,7 @@ jobs:
           ref: main
           fetch-depth: 0
 
-      - name: Show source information
+      - name: Show source commit
         run: |
           set -e
 
@@ -30,16 +30,7 @@ jobs:
           git rev-parse HEAD
           git log --oneline -10
 
-          echo "================================="
-          echo "CHECKING OC SOURCE"
-          echo "================================="
-
-          grep -Rni \
-            "OVERCLOCK\|2133\|895000000" \
-            arch/arm64/boot/dts/qcom \
-            2>/dev/null || true
-
-      - name: Install dependencies
+      - name: Install build dependencies
         run: |
           set -e
 
@@ -56,9 +47,8 @@ jobs:
             cpio \
             rsync \
             device-tree-compiler \
-            clang \
-            lld \
-            llvm \
+            gcc \
+            g++ \
             git \
             curl \
             unzip
@@ -67,17 +57,11 @@ jobs:
         run: |
           set -e
 
-          echo "================================="
-          echo "DOWNLOADING KERNELSU"
-          echo "================================="
-
           mkdir -p drivers
 
           curl -L --fail \
             https://github.com/tiann/KernelSU/archive/refs/heads/main.tar.gz \
             -o /tmp/kernelsu.tar.gz
-
-          ls -lh /tmp/kernelsu.tar.gz
 
           rm -rf /tmp/kernelsu
           mkdir -p /tmp/kernelsu
@@ -97,81 +81,28 @@ jobs:
             exit 1
           fi
 
-          echo "KernelSU source:"
-          echo "$KSU_DIR"
-
           rm -rf drivers/kernelsu
 
           cp -a \
             "$KSU_DIR" \
             drivers/kernelsu
 
-          echo "================================="
-          echo "KERNELSU STRUCTURE"
-          echo "================================="
-
-          find drivers/kernelsu/kernel \
-            -maxdepth 2 \
-            -type f \
-            | sort \
-            | head -100
-
-      - name: Prepare KernelSU kernel layout
-        run: |
-          set -e
-
-          echo "================================="
-          echo "PREPARING KERNELSU KERNEL LAYOUT"
-          echo "================================="
-
-          test -f drivers/kernelsu/kernel/Kconfig
-          test -f drivers/kernelsu/kernel/Kbuild
-
-          echo "KernelSU kernel/Kconfig found."
-
-          # This kernel's drivers/Kconfig expects:
-          # drivers/kernelsu/Kconfig
-          #
-          # Current KernelSU stores the kernel integration inside:
-          # drivers/kernelsu/kernel/Kconfig
-          #
-          # Copy the kernel integration files into the location
-          # expected by this kernel tree.
+          if [ ! -f drivers/kernelsu/kernel/Kconfig ]; then
+            echo "ERROR: KernelSU kernel/Kconfig missing."
+            exit 1
+          fi
 
           cp -a \
             drivers/kernelsu/kernel/. \
             drivers/kernelsu/
 
-          echo "Checking expected Kconfig..."
+          test -f drivers/kernelsu/Kconfig
 
-          if [ ! -f drivers/kernelsu/Kconfig ]; then
-            echo "ERROR: drivers/kernelsu/Kconfig still missing."
-            exit 1
-          fi
-
-          echo "SUCCESS:"
-          ls -lh drivers/kernelsu/Kconfig
-
-      - name: Check KernelSU Kconfig entry
-        run: |
-          set -e
-
-          echo "================================="
-          echo "KERNELSU KCONFIG CHECK"
-          echo "================================="
-
-          grep -n "kernelsu" drivers/Kconfig || true
-
-          echo "Top-level KernelSU Kconfig:"
-          head -80 drivers/kernelsu/Kconfig
+          echo "KernelSU ready."
 
       - name: Find Surya defconfig
         run: |
           set -e
-
-          echo "================================="
-          echo "FINDING SURYA DEFCONFIG"
-          echo "================================="
 
           for cfg in \
             surya_defconfig \
@@ -181,36 +112,20 @@ jobs:
             sm7150_defconfig
           do
             if [ -f "arch/arm64/configs/$cfg" ]; then
-              echo "Found:"
-              echo "$cfg"
-
               echo "DEFCONFIG=$cfg" >> "$GITHUB_ENV"
-
+              echo "Using $cfg"
               exit 0
             fi
           done
 
-          echo "ERROR: No compatible Surya defconfig found."
-
-          find arch/arm64/configs \
-            -maxdepth 3 \
-            -type f \
-            | grep -Ei \
-              'surya|sm6150|sm7150' \
-            || true
-
+          echo "ERROR: Surya defconfig not found."
           exit 1
 
-      - name: Prepare kernel configuration
+      - name: Prepare configuration
         run: |
           set -e
 
-          echo "================================="
-          echo "PREPARING KERNEL CONFIG"
-          echo "================================="
-
           rm -rf out
-
           mkdir -p out
 
           make \
@@ -223,23 +138,13 @@ jobs:
             ARCH=arm64 \
             olddefconfig
 
-          echo "Configuration completed."
-
-      - name: Verify configuration
+      - name: Check compiler
         run: |
-          set -e
+          echo "GCC:"
+          gcc --version
 
-          echo "================================="
-          echo "CONFIG VERIFICATION"
-          echo "================================="
-
-          grep -E \
-            'CONFIG_KSU|CONFIG_KPROBES|CONFIG_OVERLAY_FS' \
-            out/.config \
-            || true
-
-          echo "Config lines:"
-          wc -l out/.config
+          echo "G++:"
+          g++ --version
 
       - name: Build kernel
         run: |
@@ -248,18 +153,20 @@ jobs:
           export ARCH=arm64
           export SUBARCH=arm64
 
-          export LLVM=1
-          export LLVM_IAS=1
+          unset LLVM
+          unset LLVM_IAS
+          unset CC
+          unset HOSTCC
 
           echo "================================="
-          echo "BUILDING SURYA KERNEL"
+          echo "BUILDING WITH GCC"
           echo "================================="
 
           make \
             O=out \
             ARCH=arm64 \
-            LLVM=1 \
-            LLVM_IAS=1 \
+            HOSTCC=gcc \
+            CC=gcc \
             -j"$(nproc)"
 
       - name: Check kernel image
@@ -290,8 +197,7 @@ jobs:
 
           else
 
-            echo "ERROR: No kernel image generated."
-
+            echo "ERROR: Kernel image was not generated."
             exit 1
 
           fi
@@ -304,7 +210,7 @@ jobs:
           set -e
 
           echo "================================="
-          echo "OC VERIFICATION"
+          echo "OC SOURCE CHECK"
           echo "================================="
 
           grep -Rni \
@@ -313,16 +219,11 @@ jobs:
             2>/dev/null \
             || true
 
-          echo "Generated image:"
-          ls -lh \
-            "out/arch/arm64/boot/$KERNEL_IMAGE"
-
-      - name: Create package
+      - name: Package kernel
         run: |
           set -e
 
           rm -rf release
-
           mkdir -p release
 
           cp \
@@ -337,21 +238,17 @@ jobs:
             cp out/vmlinux release/
           fi
 
-          cp \
-            out/.config \
-            release/kernel.config
+          cp out/.config release/kernel.config
 
           cd release
-
           sha256sum * > SHA256SUMS
-
           cd ..
 
           zip -9 -r \
             Surya-OC-Kernel.zip \
             release
 
-      - name: Upload artifact
+      - name: Upload kernel
         uses: actions/upload-artifact@v4
         with:
           name: Surya-OC-Kernel
