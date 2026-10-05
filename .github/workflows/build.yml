@@ -18,15 +18,6 @@ jobs:
           ref: main
           fetch-depth: 0
 
-      - name: Verify source
-        run: |
-          echo "Repository:"
-          git remote -v
-          echo "Current commit:"
-          git rev-parse HEAD
-          echo "Recent commits:"
-          git log --oneline -5
-
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -43,13 +34,27 @@ jobs:
             device-tree-compiler \
             clang \
             lld \
-            llvm
+            llvm \
+            git
+
+      - name: Add KernelSU
+        run: |
+          set -e
+
+          rm -rf drivers/kernelsu
+
+          git clone --depth=1 \
+            https://github.com/tiann/KernelSU.git \
+            drivers/kernelsu
+
+          test -f drivers/kernelsu/Kconfig
+
+          echo "KernelSU Kconfig found:"
+          ls -l drivers/kernelsu/Kconfig
 
       - name: Find Surya defconfig
         run: |
           set -e
-
-          echo "Searching for Surya defconfig..."
 
           for cfg in \
             surya_defconfig \
@@ -65,22 +70,18 @@ jobs:
             fi
           done
 
-          echo "ERROR: No compatible Surya defconfig found."
+          echo "ERROR: No Surya defconfig found"
           exit 1
 
-      - name: Prepare kernel configuration
+      - name: Prepare configuration
         run: |
           set -e
 
           mkdir -p out
 
-          echo "Using defconfig: $DEFCONFIG"
-
           make O=out ARCH=arm64 "$DEFCONFIG"
 
           make O=out ARCH=arm64 olddefconfig
-
-          echo "Kernel configuration prepared."
 
       - name: Build kernel
         run: |
@@ -91,8 +92,6 @@ jobs:
           export LLVM=1
           export LLVM_IAS=1
 
-          echo "Starting kernel compilation..."
-
           make \
             O=out \
             ARCH=arm64 \
@@ -100,11 +99,10 @@ jobs:
             LLVM_IAS=1 \
             -j"$(nproc)"
 
-      - name: Check kernel output
+      - name: Check kernel image
         run: |
           set -e
 
-          echo "Kernel output files:"
           find out/arch/arm64/boot \
             -maxdepth 2 \
             -type f \
@@ -117,13 +115,11 @@ jobs:
           elif [ -f out/arch/arm64/boot/Image ]; then
             echo "KERNEL_IMAGE=Image" >> "$GITHUB_ENV"
           else
-            echo "ERROR: Kernel image was not generated."
+            echo "ERROR: No kernel image generated"
             exit 1
           fi
 
-          echo "Selected kernel: $KERNEL_IMAGE"
-
-      - name: Create release package
+      - name: Package kernel
         run: |
           set -e
 
@@ -132,27 +128,21 @@ jobs:
           cp "out/arch/arm64/boot/$KERNEL_IMAGE" \
             "release/$KERNEL_IMAGE"
 
-          if [ -f out/System.map ]; then
-            cp out/System.map release/System.map
-          fi
+          [ -f out/System.map ] && cp out/System.map release/System.map || true
+          [ -f out/vmlinux ] && cp out/vmlinux release/vmlinux || true
 
           cp out/.config release/kernel.config
-
-          if [ -f out/vmlinux ]; then
-            cp out/vmlinux release/vmlinux
-          fi
 
           cd release
           sha256sum * > SHA256SUMS
           cd ..
 
           zip -9 -r \
-            Surya-OC-Kernel-54d2de1.zip \
+            Surya-OC-Kernel.zip \
             release
 
       - name: Upload kernel
         uses: actions/upload-artifact@v4
         with:
-          name: Surya-OC-Kernel-54d2de1
-          path: |
-            Surya-OC-Kernel-54d2de1.zip
+          name: Surya-OC-Kernel
+          path: Surya-OC-Kernel.zip
